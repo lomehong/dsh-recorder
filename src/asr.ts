@@ -104,15 +104,30 @@ export async function transcribeFile(filePath: string, opts: AsrOptions = {}): P
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "dsh-recorder-"));
   const wavPath = path.join(tmpDir, "audio.wav");
   try {
-    // 1) ffmpeg 转 16kHz mono
+    // 1) ffmpeg 转 16kHz mono；裸 Opus（非 Ogg 容器）先经 opus2ogg.py 封装
     const ff = await runProcess(ffmpeg, ["-loglevel", "error", "-y",
       "-i", filePath, "-ar", "16000", "-ac", "1", "-c:a", "pcm_s16le", wavPath]);
-    if (ff.code !== 0) {
+    let inputForAsr = wavPath;
+    if (ff.code !== 0 && path.extname(filePath).toLowerCase() === ".opus") {
+      // 裸 Opus 流：封装为 Ogg/Opus 后再解码
+      const oggPath = path.join(tmpDir, "audio.ogg");
+      const wrap = await runProcess("python", ["-u", path.join(import.meta.dirname, "..", "tools", "opus2ogg.py"),
+        filePath, oggPath]);
+      if (wrap.code !== 0) {
+        throw new AsrNotAvailable("裸 Opus 封装失败：" + (wrap.stderr.trim() || wrap.stdout.trim() || "未知错误"));
+      }
+      const ff2 = await runProcess(ffmpeg, ["-loglevel", "error", "-y",
+        "-i", oggPath, "-ar", "16000", "-ac", "1", "-c:a", "pcm_s16le", wavPath]);
+      if (ff2.code !== 0) {
+        throw new AsrNotAvailable("ffmpeg 转码失败（Opus）：" + (ff2.stderr.trim() || ff2.stdout.trim() || "未知错误"));
+      }
+      inputForAsr = wavPath;
+    } else if (ff.code !== 0) {
       throw new AsrNotAvailable("ffmpeg 转码失败：" + (ff.stderr.trim() || ff.stdout.trim() || "未知错误"));
     }
 
     // 2) ASR 命令（whisper.cpp 兼容参数）
-    const asrArgs: string[] = ["-f", wavPath, "-nt", "-np", "-ojf", "-of", path.join(tmpDir, "out")];
+    const asrArgs: string[] = ["-f", inputForAsr, "-nt", "-np", "-ojf", "-of", path.join(tmpDir, "out")];
     if (model) asrArgs.push("-m", model);
     if (opts.language && opts.language !== "auto") asrArgs.push("-l", opts.language);
     const run = await runProcess(asr, asrArgs);
