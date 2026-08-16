@@ -13,14 +13,16 @@ BLE 传输层可插拔（noble 真机 / 模拟设备）。
 import z from "@deepseek-ai/schemastery";
 import { defineTool } from "@deepseek-ai/dsh-tools";
 import { HarnessError } from "@deepseek-ai/dsh-llm";
+import * as path from "node:path";
 import * as P from "./protocol.js";
 import { Recorder, type DownloadResult } from "./device.js";
 import { NobleTransport, SimulatedTransport, type BleTransport, type ScanDevice } from "./transport.js";
 import { PythonBridgeTransport } from "./python-transport.js";
+import { processFile, startWatcher, type ProcessMode } from "./pipeline.js";
 import * as asr from "./asr.js";
 
 export const name = "recorder";
-export const inject = ["tools", "systemPrompt"];
+export const inject = ["tools", "systemPrompt", "llm"];
 
 /** Schemastery 配置：输出目录、传输后端、ASR 后端。 */
 export const Config = z.object({
@@ -44,6 +46,16 @@ export const Config = z.object({
   asrModel: z.string().default(""),
   /** 转写默认语言：auto/zh/en/yue/ja/ko。 */
   language: z.string().default("auto"),
+  /** 下载完成后自动转写并生成结构化报告。 */
+  autoProcess: z.boolean().default(false),
+  /** 轮询监听下载目录，新音频文件自动处理。 */
+  dirWatch: z.boolean().default(false),
+  /** 归档根目录；缺省为 outputDir/archive。 */
+  archiveRoot: z.string().default(""),
+  /** LLM provider（结构化摘要，复用 DSH LLM 服务）。 */
+  llmProvider: z.string().default("deepseek-official"),
+  /** LLM 模型。 */
+  llmModel: z.string().default("deepseek-v4-flash"),
 });
 
 // DSH 约定 render(args, value)：第一个参数是调用参数，第二个才是执行结果。
@@ -160,6 +172,11 @@ function apply(ctx: any, config: any): void {
     asrCommand: config.asrCommand ?? "whisper-cli",
     asrModel: config.asrModel ?? "",
     language: config.language ?? "auto",
+    autoProcess: config.autoProcess === true,
+    dirWatch: config.dirWatch === true,
+    archiveRoot: config.archiveRoot || path.join(config.outputDir ?? "downloads", "archive"),
+    llmProvider: config.llmProvider ?? "deepseek-official",
+    llmModel: config.llmModel ?? "deepseek-v4-flash",
   };
 
   let transport: BleTransport;
@@ -427,6 +444,11 @@ function apply(ctx: any, config: any): void {
         const entry = entryByIndex(args.index);
         const result: DownloadResult = await recorder.download(
           entry, Math.max(0, args.offset ?? 0), args.filename ?? undefined);
+        if (resolved.autoProcess && result.path) {
+          runAutoProcess(result.path).catch((e) => {
+            console.error("[recorder] autoProcess 失败:", (e as Error).message);
+          });
+        }
         return {
           filename: result.filename,
           device_name: result.deviceName,
@@ -659,8 +681,99 @@ function apply(ctx: any, config: any): void {
     presentCall: (args: any) => ({ card: "generic", title: "转写", kind: "other", rawInput: args.index !== undefined ? `#${args.index}` : args.local_file }),
   }));
 
+  // ---------------- 智能处理流水线 ----------------
+
+  const llmService = () => (ctx as any).llm ?? {
+    stream: () => { throw new Error("LLM 服务不可用（插件需注入 llm 服务）"); },
+  };
+
+  const runAutoProcess = (audioPath: string, mode: ProcessMode = "meeting") =>
+    processFile({
+      audioPath,
+      transcribe: (p) => asr.transcribeFile(p, asrOpts),
+      llm: llmService(),
+      route: { provider: resolved.llmProvider, model: resolved.llmModel },
+      mode,
+      archiveRoot: resolved.archiveRoot,
+    });
+
+  ctx.tools.register(defineTool({
+    name: "recorder_process",
+    description: "智能处理录音：转写 → LLM 生成会议纪要/课堂笔记 → 归档到日期目录。参数：index（设备文件，自动下载）或 local_file（输出目录内文件）；mode=meeting/note（会议纪要/课堂笔记）。返回归档路径、主题与是否降级（LLM 不可用时保留转写）。",
+    parameters: {
+      index: { type: "integer", description: "设备文件序号（与 local_file 二选一）" },
+      local_file: { type: "string", description: "输出目录内的音频文件名（与 index 二选一）" },
+      mode: { type: "string", enum: ["meeting", "note"], description: "meeting 会议纪要 / note 课堂笔记，默认 meeting" },
+    },
+    output: output({
+      type: "object", additionalProperties: false,      properties: {
+        degraded: { type: "boolean", required: true },
+        title: { type: "string", required: true },
+        md_path: { type: "string" },
+        txt_path: { type: "string", required: true },
+        audio_path: { type: "string", required: true },
+        mode: { type: "string", required: true },
+        error: { type: "string" },
+      },
+    }),
+    async execute(args: any) {
+      const mode: ProcessMode = args.mode === "note" ? "note" : "meeting";
+      return withBusy(async () => {
+        let audioPath: string | null = null;
+        if (args.index !== undefined) {
+          const entry = entryByIndex(args.index);
+          const existing = recorder.findLocalFile(entry);
+          if (existing) {
+            audioPath = existing;
+          } else {
+            requireConnected();
+            audioPath = (await recorder.download(entry)).path;
+          }
+        } else if (args.local_file) {
+          const name = path.basename(String(args.local_file));
+          const p = path.join(resolved.outputDir, name);
+          const fsMod = await import("node:fs");
+          if (!fsMod.existsSync(p)) {
+            throw new HarnessError("本地文件不存在", "RECORDER_BAD_ARGS");
+          }
+          audioPath = p;
+        } else {
+          throw new HarnessError("index 或 local_file 必须提供一个", "RECORDER_BAD_ARGS");
+        }
+        if (audioPath === null) {
+          throw new HarnessError("无法定位音频文件", "RECORDER_BAD_ARGS");
+        }
+        const result = await runAutoProcess(audioPath, mode);
+        return {
+          degraded: result.degraded,
+          title: result.title,
+          md_path: result.mdPath,
+          txt_path: result.txtPath,
+          audio_path: result.audioPath,
+          mode,
+          ...(result.error ? { error: result.error } : {}),
+        };
+      });
+    },
+    presentCall: (args: any) => ({ card: "generic", title: "智能处理录音", kind: "execute", rawInput: args.local_file ?? `#${args.index}` }),
+  }));
+
+  // 可选：轮询监听下载目录，新音频自动处理
+  let watcherStop: (() => void) | null = null;
+  if (resolved.dirWatch) {
+    watcherStop = startWatcher(resolved.outputDir, {
+      onNew: (name) => {
+        const full = path.join(resolved.outputDir, name);
+        runAutoProcess(full).catch((e) => {
+          console.error("[recorder] dirWatch 处理失败:", (e as Error).message);
+        });
+      },
+    });
+  }
+
   // 生命周期：卸载时断开
   ctx.on("dispose", () => {
+    watcherStop?.();
     recorder.disconnect().catch(() => {});
     if (transport instanceof PythonBridgeTransport) {
       transport.stop().catch(() => {});

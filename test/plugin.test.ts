@@ -13,12 +13,13 @@ interface StubTool {
   execute: (args: any, exec?: any) => Promise<unknown>;
 }
 
-function makeStubCtx(outputDir: string) {
+function makeStubCtx(outputDir: string, llm?: any) {
   const tools: StubTool[] = [];
   const sections: { name: string; text: string }[] = [];
   const ctx = {
     tools: { register: (def: StubTool) => { tools.push(def); } },
     systemPrompt: { section: (s: { name: string; text: string }) => { sections.push(s); } },
+    llm,
     on: () => {},
   } as any;
   return { ctx, tools, sections };
@@ -28,7 +29,7 @@ const EXPECTED_TOOLS = [
   "recorder_scan", "recorder_connect", "recorder_disconnect", "recorder_status",
   "recorder_smoke", "recorder_list", "recorder_download", "recorder_delete",
   "recorder_deleteall", "recorder_rec", "recorder_gain", "recorder_rt",
-  "recorder_raw", "recorder_transcribe",
+  "recorder_raw", "recorder_transcribe", "recorder_process",
 ];
 
 test("插件元信息", () => {
@@ -111,5 +112,30 @@ test("删除操作必须 confirm=true", async () => {
   await assert.rejects(() => del.execute({ index: 0 }), /confirm/);
   const ok = await del.execute({ index: 0, confirm: true });
   assert.equal((ok as any).message.includes("删除"), true);
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test("recorder_process 工具注册与参数校验", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "dsh-rec-plug-"));
+  const outDir = path.join(dir, "out");
+  fs.mkdirSync(outDir);
+  const llmStream = () => (async function* () { yield { type: "text-delta", index: 0, text: '{"title":"测试纪要","body":"ok"}' }; })();
+  const { ctx, tools } = makeStubCtx(dir, { stream: llmStream });
+  plugin.apply(ctx, { transport: "simulated", outputDir: outDir, archiveRoot: path.join(dir, "archive"), asrCommand: "definitely-not-whisper" });
+  const proc = tools.find((t) => t.name === "recorder_process")!;
+  assert.ok(proc, "recorder_process 应已注册");
+  assert.match(proc.description, /会议纪要|课堂笔记/);
+
+  // 缺参数报错
+  await assert.rejects(() => proc.execute({}), /index 或 local_file/);
+  // 本地文件不存在报错
+  await assert.rejects(() => proc.execute({ local_file: "nope.wav" }), /本地文件不存在/);
+
+  // 转写依赖缺失给出明确错误（全流程 pipeline 单测已覆盖）
+  const audio = path.join(outDir, "a.wav");
+  fs.writeFileSync(audio, "RIFFfake");
+  await assert.rejects(
+    () => proc.execute({ local_file: "a.wav" }),
+    (err: any) => err?.message?.includes("找不到 ASR 命令"));
   fs.rmSync(dir, { recursive: true, force: true });
 });
