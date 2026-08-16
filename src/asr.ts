@@ -34,6 +34,15 @@ function runProcess(cmd: string, args: string[]): Promise<{ code: number; stdout
 }
 
 function which(cmd: string): string | null {
+  // 绝对路径：直接检查可执行性（Windows 上 spawn 绝对路径可用）
+  if (path.isAbsolute(cmd)) {
+    try {
+      fs.accessSync(cmd, fs.constants.X_OK);
+      return cmd;
+    } catch {
+      return null;
+    }
+  }
   const dirs = (process.env.PATH ?? "").split(path.delimiter);
   const exts = process.platform === "win32"
     ? [".exe", ".cmd", ".bat", ""]
