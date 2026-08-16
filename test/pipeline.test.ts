@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { archiveFile, buildStructurePrompt, collectLlmText, parseStructured, processFile, sanitizeTitle, streamChat } from "../src/pipeline.js";
+import { archiveFile, buildStructurePrompt, collectLlmText, parseStructured, processFile, sanitizeTitle, startWatcher, streamChat } from "../src/pipeline.js";
 
 test("sanitizeTitle 清理非法文件名字符", () => {
   assert.equal(sanitizeTitle('项目周会/讨论: "预算"*'), "项目周会讨论预算");
@@ -170,6 +170,31 @@ test("processFile LLM 失败降级保留转写", async () => {
   });
   assert.ok(result.degraded === true);
   assert.ok(fs.existsSync(result.txtPath!));
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
+
+test("startWatcher 检测新文件并回调", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "pipeline-"));
+  const seen: string[] = [];
+  const stop = startWatcher(root, { intervalMs: 50, onNew: (f) => { seen.push(f); } });
+  await new Promise((r) => setTimeout(r, 100));
+  fs.writeFileSync(path.join(root, "new.wav"), "x");
+  await new Promise((r) => setTimeout(r, 200));
+  stop();
+  assert.ok(seen.includes("new.wav"));
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
+test("startWatcher 忽略已存在文件与 txt/md", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "pipeline-"));
+  fs.writeFileSync(path.join(root, "old.wav"), "x");
+  fs.writeFileSync(path.join(root, "note.txt"), "x");
+  const seen: string[] = [];
+  const stop = startWatcher(root, { intervalMs: 50, onNew: (f) => { seen.push(f); } });
+  await new Promise((r) => setTimeout(r, 150));
+  stop();
+  assert.deepEqual(seen, []);
   fs.rmSync(root, { recursive: true, force: true });
 });
 

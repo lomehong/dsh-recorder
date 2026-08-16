@@ -142,3 +142,36 @@ export async function processFile(opts: ProcessOptions): Promise<ProcessResult> 
   });
   return { degraded, title, mdPath: degraded ? null : archived.mdPath, txtPath: archived.txtPath, audioPath: archived.audioPath, ...(error ? { error } : {}) };
 }
+
+export interface WatcherOptions {
+  intervalMs?: number;
+  onNew: (filename: string) => void;
+}
+
+export function startWatcher(dir: string, opts: WatcherOptions): () => void {
+  const intervalMs = opts.intervalMs ?? 10000;
+  const audioExts = new Set([".wav", ".opus", ".mp3", ".m4a"]);
+  let known = new Set<string>();
+  try {
+    known = new Set(fs.readdirSync(dir).filter((f) => audioExts.has(path.extname(f).toLowerCase())));
+  } catch {
+    // 目录尚不存在
+  }
+  const timer = setInterval(() => {
+    let current: string[];
+    try {
+      current = fs.readdirSync(dir);
+    } catch {
+      return;
+    }
+    for (const name of current) {
+      if (!audioExts.has(path.extname(name).toLowerCase())) continue;
+      if (!known.has(name)) {
+        known.add(name);
+        opts.onNew(name);
+      }
+    }
+    known = new Set(current.filter((f) => audioExts.has(path.extname(f).toLowerCase())));
+  }, intervalMs);
+  return () => clearInterval(timer);
+}
