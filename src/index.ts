@@ -687,8 +687,20 @@ function apply(ctx: any, config: any): void {
     stream: () => { throw new Error("LLM 服务不可用（插件需注入 llm 服务）"); },
   };
 
-  const runAutoProcess = (audioPath: string, mode: ProcessMode = "meeting") =>
-    processFile({
+  // 幂等去重：autoProcess 与 dirWatch 可能命中同一文件，短时间不重复处理
+  const recentlyProcessed = new Set<string>();
+  const runAutoProcess = (audioPath: string, mode: ProcessMode = "meeting") => {
+    const real = path.resolve(audioPath);
+    if (recentlyProcessed.has(real)) {
+      console.error("[recorder] 跳过重复处理:", audioPath);
+      return Promise.resolve({
+        degraded: true, title: "", mdPath: null, txtPath: audioPath, audioPath,
+        error: "已处理过（去重跳过）",
+      } as Awaited<ReturnType<typeof processFile>>);
+    }
+    recentlyProcessed.add(real);
+    setTimeout(() => recentlyProcessed.delete(real), 60_000);
+    return processFile({
       audioPath,
       transcribe: (p) => asr.transcribeFile(p, asrOpts),
       llm: llmService(),
@@ -696,6 +708,7 @@ function apply(ctx: any, config: any): void {
       mode,
       archiveRoot: resolved.archiveRoot,
     });
+  };
 
   ctx.tools.register(defineTool({
     name: "recorder_process",

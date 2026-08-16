@@ -169,6 +169,33 @@ test("processFile LLM 失败降级保留转写", async () => {
     now: () => new Date(2026, 7, 16, 10, 30),
   });
   assert.ok(result.degraded === true);
+  assert.equal(result.mdPath, null, "降级时不生成 .md");
+  assert.ok(fs.existsSync(result.txtPath!), "应保留转写 .txt");
+  assert.match(result.error ?? "", /LLM/);
+  // 降级目录中不应有 .md
+  const mdFiles = fs.readdirSync(path.dirname(result.txtPath)).filter((f) => f.endsWith(".md"));
+  assert.equal(mdFiles.length, 0, "降级时归档目录不应有 .md");
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
+test("collectLlmText LLM 提供方失败抛出可读错误", async () => {
+  async function* chunks() {
+    yield { type: "finish", reason: { kind: "error", failure: { message: "API key 无效", code: "AUTH" } } };
+  }
+  await assert.rejects(collectLlmText(chunks()), /API key 无效/);
+});
+
+test("archiveFile skipMd 不生成 .md", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "pipeline-"));
+  const srcDir = path.join(root, "src");
+  fs.mkdirSync(srcDir);
+  const audio = path.join(srcDir, "a.wav");
+  fs.writeFileSync(audio, "RIFFfake");
+  const result = archiveFile({
+    audioPath: audio, transcript: "t", title: "主题", body: "b",
+    date: new Date(), archiveRoot: path.join(root, "archive"), mode: "note", skipMd: true,
+  });
+  assert.equal(result.mdPath, null);
   assert.ok(fs.existsSync(result.txtPath!));
   fs.rmSync(root, { recursive: true, force: true });
 });

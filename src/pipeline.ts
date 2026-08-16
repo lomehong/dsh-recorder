@@ -10,6 +10,15 @@ export function sanitizeTitle(raw: string): string {
 export async function collectLlmText(chunks: AsyncIterable<any>): Promise<string> {
   const asm = new BlockAssembler();
   for await (const chunk of chunks) {
+    // LLM 提供方失败：dsh-llm 以 finish(reason.kind=error) 终止流，这里转成可读错误，
+    // 避免 BlockAssembler 对未知 chunk 抛 "unreachable variant" 掩盖真实原因。
+    if (chunk?.type === "finish" && chunk.reason?.kind === "error" && chunk.reason?.failure) {
+      const failure = chunk.reason.failure;
+      const message = typeof failure.message === "string"
+        ? failure.message
+        : (failure.code ? `LLM 调用失败（${failure.code}）` : "LLM 调用失败");
+      throw new Error(message);
+    }
     asm.push(chunk);
   }
   const text = asm
@@ -69,10 +78,12 @@ export interface ArchiveInput {
   date: Date;
   archiveRoot: string;
   mode: ProcessMode;
+  /** 降级模式：不生成 .md（LLM 结构化失败时）。 */
+  skipMd?: boolean;
 }
 
 export interface ArchiveResult {
-  mdPath: string;
+  mdPath: string | null;
   txtPath: string;
   audioPath: string;
 }
@@ -83,20 +94,33 @@ export function archiveFile(input: ArchiveInput): ArchiveResult {
   const dir = path.join(input.archiveRoot, ym);
   fs.mkdirSync(dir, { recursive: true });
   const base = sanitizeTitle(input.title) || "未命名录音";
+  // 冲突检测以 .txt 为基准（.md 可能因降级缺失，避免两者计数不同步）
   let stem = `${day}_${base}`;
   let n = 1;
-  while (fs.existsSync(path.join(dir, `${stem}.md`))) {
+  while (fs.existsSync(path.join(dir, `${stem}.txt`))) {
     stem = `${day}_${base}_${n++}`;
   }
-  const mdPath = path.join(dir, `${stem}.md`);
+  const mdPath = input.skipMd ? null : path.join(dir, `${stem}.md`);
   const txtPath = path.join(dir, `${stem}.txt`);
   const ext = path.extname(input.audioPath) || ".wav";
   const audioPath = path.join(dir, `${stem}${ext}`);
   const modeLabel = input.mode === "meeting" ? "会议纪要" : "课堂笔记";
-  const md = `# ${input.title || stem}\n\n- 类型：${modeLabel}\n- 时间：${input.date.toISOString().slice(0, 16).replace("T", " ")}\n\n${input.body}\n\n---\n\n## 全文转写\n\n${input.transcript}\n`;
-  fs.writeFileSync(mdPath, md, "utf8");
+  if (mdPath) {
+    const md = `# ${input.title || stem}\n\n- 类型：${modeLabel}\n- 时间：${input.date.toISOString().slice(0, 16).replace("T", " ")}\n\n${input.body}\n\n---\n\n## 全文转写\n\n${input.transcript}\n`;
+    fs.writeFileSync(mdPath, md, "utf8");
+  }
   fs.writeFileSync(txtPath, input.transcript + "\n", "utf8");
-  fs.renameSync(input.audioPath, audioPath);
+  // 移动原件；跨盘（EXDEV）时回退为复制+删除
+  try {
+    fs.renameSync(input.audioPath, audioPath);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "EXDEV") {
+      fs.copyFileSync(input.audioPath, audioPath);
+      fs.unlinkSync(input.audioPath);
+    } else {
+      throw error;
+    }
+  }
   return { mdPath, txtPath, audioPath };
 }
 
@@ -138,7 +162,7 @@ export async function processFile(opts: ProcessOptions): Promise<ProcessResult> 
   }
   const archived = archiveFile({
     audioPath: opts.audioPath, transcript, title, body, date,
-    archiveRoot: opts.archiveRoot, mode: opts.mode,
+    archiveRoot: opts.archiveRoot, mode: opts.mode, skipMd: degraded,
   });
   return { degraded, title, mdPath: degraded ? null : archived.mdPath, txtPath: archived.txtPath, audioPath: archived.audioPath, ...(error ? { error } : {}) };
 }
