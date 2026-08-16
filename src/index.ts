@@ -44,8 +44,8 @@ export const Config = z.object({
   asrCommand: z.string().default("whisper-cli"),
   /** whisper.cpp ggml 模型路径，如 models/ggml-base.bin。 */
   asrModel: z.string().default(""),
-  /** 转写默认语言：auto/zh/en/yue/ja/ko。 */
-  language: z.string().default("auto"),
+  /** 转写默认语言：auto/zh/en/yue/ja/ko（auto 对短视频可能误判为空白，中文设备建议 zh）。 */
+  language: z.string().default("zh"),
   /** 下载完成后自动转写并生成结构化报告。 */
   autoProcess: z.boolean().default(false),
   /** 轮询监听下载目录，新音频文件自动处理。 */
@@ -702,7 +702,7 @@ function apply(ctx: any, config: any): void {
     setTimeout(() => recentlyProcessed.delete(real), 60_000);
     return processFile({
       audioPath,
-      transcribe: (p) => asr.transcribeFile(p, asrOpts),
+      transcribe: (p) => asr.transcribeFile(p, { ...asrOpts, language: resolved.language }),
       llm: llmService(),
       route: { provider: resolved.llmProvider, model: resolved.llmModel },
       mode,
