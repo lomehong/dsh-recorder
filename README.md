@@ -49,6 +49,7 @@ tools/
 | recorder_rt | 实时码流 start/stop/pause/resume（原始码流自动备份 .opus） |
 | recorder_raw | 调试：任意 TYPE/CMD/参数十六进制封包发送 |
 | recorder_transcribe | 本地转写（依赖 ffmpeg + ASR 命令，结果存同名 .txt） |
+| recorder_process | 智能处理：转写 → LLM 生成会议纪要/课堂笔记 → 归档（mode=meeting/note） |
 
 ## 安装到 DSH
 
@@ -120,6 +121,40 @@ winget install Gyan.FFmpeg
 
 然后在插件配置中设置 asrCommand 与 asrModel 指向实际路径。
 若需 SenseVoice 等模型的完整离线转写（含说话人分离），请使用 Python 参考实现。
+
+## 智能处理（recorder_process）
+
+录音 → 转写 → **LLM 结构化** → 自动归档，把录音变成可用产出。
+
+**用法**（模型调用工具）：
+
+```
+recorder_process(index=0, mode=meeting)   # 处理设备文件（自动下载）
+recorder_process(local_file="a.wav", mode=note)  # 处理输出目录内文件
+```
+
+- `mode=meeting`：会议纪要（议题/结论/待办/关键发言摘要）
+- `mode=note`：课堂笔记（核心要点/公式术语/作业任务）
+- LLM 结构化失败时**降级**：仍保留转写全文（.txt）并返回 degraded=true
+
+**归档结构**：
+
+```
+<archiveRoot>/<YYYY-MM>/<YYYY-MM-DD>_<主题>.md    # 报告（结构化正文 + 全文附后）
+<archiveRoot>/<YYYY-MM>/<YYYY-MM-DD>_<主题>.txt   # 纯转写
+<archiveRoot>/<YYYY-MM>/<YYYY-MM-DD>_<主题>.wav   # 原件（已移入归档）
+```
+
+**配置项**：
+
+| 字段 | 默认 | 说明 |
+| --- | --- | --- |
+| `archiveRoot` | `<outputDir>/archive` | 归档根目录 |
+| `autoProcess` | false | 下载完成后自动处理 |
+| `dirWatch` | false | 轮询监听下载目录，新音频自动处理 |
+| `llmProvider` / `llmModel` | deepseek-official / deepseek-v4-flash | 结构化用的 LLM（复用 DSH LLM 服务） |
+
+依赖：转写依赖（ffmpeg + ASR 命令）+ DSH LLM 服务（`inject: ["llm"]`，DSH 会话已有模型即可用）。
 
 ## 测试
 
