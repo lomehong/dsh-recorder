@@ -17,3 +17,22 @@ export async function collectLlmText(chunks: AsyncIterable<any>): Promise<string
     .join("");
   return text.trim();
 }
+
+export interface LlmLike {
+  stream: (opts: any) => AsyncIterable<any>;
+}
+
+export interface LlmRoute {
+  provider: string;
+  model: string;
+}
+
+export async function streamChat(llm: LlmLike, route: LlmRoute, prompt: string): Promise<string> {
+  const stream = llm.stream({
+    provider: route.provider,
+    model: route.model,
+    maxTokens: 4096,
+    messages: [{ role: "user", content: [{ type: "text", text: prompt }] }],
+  });
+  return collectLlmText(stream);
+}
