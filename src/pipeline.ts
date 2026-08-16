@@ -106,7 +106,10 @@ export function archiveFile(input: ArchiveInput): ArchiveResult {
   const audioPath = path.join(dir, `${stem}${ext}`);
   const modeLabel = input.mode === "meeting" ? "会议纪要" : "课堂笔记";
   if (mdPath) {
-    const md = `# ${input.title || stem}\n\n- 类型：${modeLabel}\n- 时间：${input.date.toISOString().slice(0, 16).replace("T", " ")}\n\n${input.body}\n\n---\n\n## 全文转写\n\n${input.transcript}\n`;
+    // 本地时间（文件名用本地日期，头部时间戳保持一致）
+    const pad = (n: number) => String(n).padStart(2, "0");
+    const local = `${input.date.getFullYear()}-${pad(input.date.getMonth() + 1)}-${pad(input.date.getDate())} ${pad(input.date.getHours())}:${pad(input.date.getMinutes())}`;
+    const md = `# ${input.title || stem}\n\n- 类型：${modeLabel}\n- 时间：${local}\n\n${input.body}\n\n---\n\n## 全文转写\n\n${input.transcript}\n`;
     fs.writeFileSync(mdPath, md, "utf8");
   }
   fs.writeFileSync(txtPath, input.transcript + "\n", "utf8");

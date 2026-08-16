@@ -472,13 +472,23 @@ export class Recorder {
     const candidates = entry.candidateNames();
     const stem = candidates[0]!.replace(/\.\w+$/, "");
     const prefix = `${stem}_${entry.duration}s_${entry.size}`;
+    const matches: string[] = [];
     for (const name of fs.readdirSync(this.outputDir)) {
       const p = path.join(this.outputDir, name);
       if (!fs.statSync(p).isFile()) continue;
-      if (candidates.includes(name) || name === stem) return p;
+      if (candidates.includes(name)) return p; // 精确候选名（.wav 在前）
+      if (name === stem) return p;
       if (name.startsWith(prefix) && [".wav", ".opus"].includes(path.extname(name).toLowerCase())) {
-        return p;
+        matches.push(name);
       }
+    }
+    // 带 _时长s_大小 后缀的匹配文件：优先 .wav（WAV 是 ffmpeg 直接可解码的完整文件）
+    if (matches.length > 0) {
+      matches.sort((a, b) => {
+        const rank = (n: string) => path.extname(n).toLowerCase() === ".wav" ? 0 : 1;
+        return rank(a) - rank(b);
+      });
+      return path.join(this.outputDir, matches[0]!);
     }
     return null;
   }
