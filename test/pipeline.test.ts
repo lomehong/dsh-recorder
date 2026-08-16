@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { collectLlmText, sanitizeTitle, streamChat } from "../src/pipeline.js";
+import { buildStructurePrompt, collectLlmText, parseStructured, sanitizeTitle, streamChat } from "../src/pipeline.js";
 
 test("sanitizeTitle 清理非法文件名字符", () => {
   assert.equal(sanitizeTitle('项目周会/讨论: "预算"*'), "项目周会讨论预算");
@@ -61,3 +61,24 @@ test("streamChat 组装消息并返回全文", async () => {
   assert.equal(calls[0].messages[0].role, "user");
   assert.match(calls[0].messages[0].content[0].text, /我的提示/);
 });
+
+test("buildStructurePrompt 生成 meeting 模式 prompt", () => {
+  const p = buildStructurePrompt("meeting", "全文内容");
+  assert.match(p, /会议/);
+  assert.match(p, /全文内容/);
+  assert.match(p, /待办/);
+});
+
+test("parseStructured 解析 JSON 块", () => {
+  const text = '{"title":"项目周会","body":"## 议题\\n- A"}';
+  const r = parseStructured(text);
+  assert.equal(r.title, "项目周会");
+  assert.equal(r.body, "## 议题\n- A");
+});
+
+test("parseStructured 无 JSON 时整体视为 body", () => {
+  const r = parseStructured("纯文本说明");
+  assert.equal(r.title, "");
+  assert.ok(r.body.includes("纯文本说明"));
+});
+
