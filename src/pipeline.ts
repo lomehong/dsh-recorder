@@ -1,4 +1,6 @@
 import { BlockAssembler } from "@deepseek-ai/dsh-llm";
+import * as fs from "node:fs";
+import * as path from "node:path";
 
 export function sanitizeTitle(raw: string): string {
   const cleaned = raw.replace(/[\\/:*?"<>|]/g, "").replace(/\s+/g, "").replace(/[. ]+$/, "");
@@ -57,4 +59,43 @@ export function parseStructured(text: string): { title: string; body: string } {
     }
   }
   return { title: "", body: text };
+}
+
+export interface ArchiveInput {
+  audioPath: string;
+  transcript: string;
+  title: string;
+  body: string;
+  date: Date;
+  archiveRoot: string;
+  mode: ProcessMode;
+}
+
+export interface ArchiveResult {
+  mdPath: string;
+  txtPath: string;
+  audioPath: string;
+}
+
+export function archiveFile(input: ArchiveInput): ArchiveResult {
+  const ym = `${input.date.getFullYear()}-${String(input.date.getMonth() + 1).padStart(2, "0")}`;
+  const day = `${ym}-${String(input.date.getDate()).padStart(2, "0")}`;
+  const dir = path.join(input.archiveRoot, ym);
+  fs.mkdirSync(dir, { recursive: true });
+  const base = sanitizeTitle(input.title) || "未命名录音";
+  let stem = `${day}_${base}`;
+  let n = 1;
+  while (fs.existsSync(path.join(dir, `${stem}.md`))) {
+    stem = `${day}_${base}_${n++}`;
+  }
+  const mdPath = path.join(dir, `${stem}.md`);
+  const txtPath = path.join(dir, `${stem}.txt`);
+  const ext = path.extname(input.audioPath) || ".wav";
+  const audioPath = path.join(dir, `${stem}${ext}`);
+  const modeLabel = input.mode === "meeting" ? "会议纪要" : "课堂笔记";
+  const md = `# ${input.title || stem}\n\n- 类型：${modeLabel}\n- 时间：${input.date.toISOString().slice(0, 16).replace("T", " ")}\n\n${input.body}\n\n---\n\n## 全文转写\n\n${input.transcript}\n`;
+  fs.writeFileSync(mdPath, md, "utf8");
+  fs.writeFileSync(txtPath, input.transcript + "\n", "utf8");
+  fs.renameSync(input.audioPath, audioPath);
+  return { mdPath, txtPath, audioPath };
 }

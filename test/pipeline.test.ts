@@ -1,6 +1,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { buildStructurePrompt, collectLlmText, parseStructured, sanitizeTitle, streamChat } from "../src/pipeline.js";
+import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
+import { archiveFile, buildStructurePrompt, collectLlmText, parseStructured, sanitizeTitle, streamChat } from "../src/pipeline.js";
 
 test("sanitizeTitle 清理非法文件名字符", () => {
   assert.equal(sanitizeTitle('项目周会/讨论: "预算"*'), "项目周会讨论预算");
@@ -81,4 +84,46 @@ test("parseStructured 无 JSON 时整体视为 body", () => {
   assert.equal(r.title, "");
   assert.ok(r.body.includes("纯文本说明"));
 });
+
+
+test("archiveFile 生成三件套并移动原件", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "pipeline-"));
+  const srcDir = path.join(root, "src");
+  fs.mkdirSync(srcDir);
+  const audio = path.join(srcDir, "a.wav");
+  fs.writeFileSync(audio, "RIFFfake");
+  const result = archiveFile({
+    audioPath: audio,
+    transcript: "全文",
+    title: "周会",
+    body: "## 议题",
+    date: new Date(2026, 7, 16, 10, 30),
+    archiveRoot: path.join(root, "archive"),
+    mode: "meeting",
+  });
+  assert.ok(fs.existsSync(result.mdPath));
+  assert.ok(fs.existsSync(result.txtPath));
+  assert.ok(fs.existsSync(result.audioPath), "原件应移入归档目录");
+  assert.ok(!fs.existsSync(audio), "原位置应不再有文件");
+  const md = fs.readFileSync(result.mdPath, "utf8");
+  assert.match(md, /周会/);
+  assert.match(md, /全文/);
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
+test("archiveFile 文件名冲突自动加后缀", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "pipeline-"));
+  const srcDir = path.join(root, "src");
+  fs.mkdirSync(srcDir);
+  const audio = path.join(srcDir, "a.wav");
+  fs.writeFileSync(audio, "RIFFfake");
+  const r1 = archiveFile({ audioPath: audio, transcript: "t", title: "主题", body: "b", date: new Date(), archiveRoot: path.join(root, "archive"), mode: "note" });
+  const audio2 = path.join(srcDir, "b.wav");
+  fs.writeFileSync(audio2, "RIFFfake");
+  const r2 = archiveFile({ audioPath: audio2, transcript: "t", title: "主题", body: "b", date: new Date(), archiveRoot: path.join(root, "archive"), mode: "note" });
+  assert.notEqual(r2.mdPath, r1.mdPath, "冲突时路径应不同");
+  assert.match(r2.mdPath, /_1\.md$/, "第二个文件应带 _1 后缀");
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
 
