@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { archiveFile, buildStructurePrompt, collectLlmText, parseStructured, sanitizeTitle, streamChat } from "../src/pipeline.js";
+import { archiveFile, buildStructurePrompt, collectLlmText, parseStructured, processFile, sanitizeTitle, streamChat } from "../src/pipeline.js";
 
 test("sanitizeTitle 清理非法文件名字符", () => {
   assert.equal(sanitizeTitle('项目周会/讨论: "预算"*'), "项目周会讨论预算");
@@ -126,4 +126,50 @@ test("archiveFile 文件名冲突自动加后缀", () => {
   fs.rmSync(root, { recursive: true, force: true });
 });
 
+
+
+test("processFile 完整流程（mock LLM）", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "pipeline-"));
+  const srcDir = path.join(root, "src");
+  fs.mkdirSync(srcDir);
+  const audio = path.join(srcDir, "a.wav");
+  fs.writeFileSync(audio, "RIFFfake");
+  let llmPrompt = "";
+  const fakeLlm = { stream: (opts: any) => { llmPrompt = opts.messages[0].content[0].text; return (async function* () { yield { type: "text-delta", index: 0, text: '{"title":"测试","body":"## 结论\\nok"}' }; })(); } };
+  const result = await processFile({
+    audioPath: audio,
+    transcribe: async () => "这是一段测试转写",
+    llm: fakeLlm as any,
+    route: { provider: "p", model: "m" },
+    mode: "meeting",
+    archiveRoot: path.join(root, "archive"),
+    now: () => new Date(2026, 7, 16, 10, 30),
+  });
+  assert.ok(result.degraded === false);
+  assert.equal(result.title, "测试");
+  assert.ok(fs.existsSync(result.mdPath!));
+  assert.match(llmPrompt, /这是一段测试转写/);
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
+test("processFile LLM 失败降级保留转写", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "pipeline-"));
+  const srcDir = path.join(root, "src");
+  fs.mkdirSync(srcDir);
+  const audio = path.join(srcDir, "a.wav");
+  fs.writeFileSync(audio, "RIFFfake");
+  const fakeLlm = { stream: () => { throw new Error("LLM 不可用"); } };
+  const result = await processFile({
+    audioPath: audio,
+    transcribe: async () => "转写成功",
+    llm: fakeLlm as any,
+    route: { provider: "p", model: "m" },
+    mode: "note",
+    archiveRoot: path.join(root, "archive"),
+    now: () => new Date(2026, 7, 16, 10, 30),
+  });
+  assert.ok(result.degraded === true);
+  assert.ok(fs.existsSync(result.txtPath!));
+  fs.rmSync(root, { recursive: true, force: true });
+});
 

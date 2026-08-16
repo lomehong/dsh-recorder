@@ -99,3 +99,46 @@ export function archiveFile(input: ArchiveInput): ArchiveResult {
   fs.renameSync(input.audioPath, audioPath);
   return { mdPath, txtPath, audioPath };
 }
+
+export interface ProcessOptions {
+  audioPath: string;
+  transcribe: (p: string) => Promise<string>;
+  llm: LlmLike;
+  route: LlmRoute;
+  mode: ProcessMode;
+  archiveRoot: string;
+  now?: () => Date;
+}
+
+export interface ProcessResult {
+  degraded: boolean;
+  title: string;
+  mdPath: string | null;
+  txtPath: string;
+  audioPath: string;
+  error?: string;
+}
+
+export async function processFile(opts: ProcessOptions): Promise<ProcessResult> {
+  const date = (opts.now ?? (() => new Date()))();
+  const transcript = await opts.transcribe(opts.audioPath);
+  let title = "";
+  let body = "";
+  let degraded = false;
+  let error: string | undefined;
+  try {
+    const raw = await streamChat(opts.llm, opts.route, buildStructurePrompt(opts.mode, transcript));
+    const parsed = parseStructured(raw);
+    title = parsed.title;
+    body = parsed.body || "（未生成结构化正文）";
+  } catch (e) {
+    degraded = true;
+    error = (e as Error).message;
+    body = "（LLM 结构化失败：" + error + "）";
+  }
+  const archived = archiveFile({
+    audioPath: opts.audioPath, transcript, title, body, date,
+    archiveRoot: opts.archiveRoot, mode: opts.mode,
+  });
+  return { degraded, title, mdPath: degraded ? null : archived.mdPath, txtPath: archived.txtPath, audioPath: archived.audioPath, ...(error ? { error } : {}) };
+}
